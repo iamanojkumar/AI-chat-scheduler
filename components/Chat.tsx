@@ -6,15 +6,64 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Send, Calendar, Loader2 } from "lucide-react";
 import { useSession, signIn } from "next-auth/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function Chat() {
   const { data: session, status } = useSession();
   const { messages, input, handleInputChange, handleSubmit, isLoading } =
     useChat({
-      api: "/api/chat",
+      api: process.env.NODE_ENV === "development" ? "/api/chat/raw-proxy" : "/api/chat",
     });
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [approvalState, setApprovalState] = useState<Record<string, { status: "idle" | "creating" | "done" | "error"; result?: any }>>({});
+
+  function extractProposal(toolInvocation: any) {
+    // The tool execution return may be placed under different keys depending on SDK
+    const candidates = [
+      toolInvocation.result,
+      toolInvocation.toolResult,
+      toolInvocation.output,
+      toolInvocation.outputs?.[0],
+      toolInvocation,
+    ];
+    for (const c of candidates) {
+      if (!c) continue;
+      const obj = typeof c === "string" ? null : c;
+      if (!obj) continue;
+      // check for the expected calendar event keys
+      if (obj.proposal && obj.proposal.title && obj.proposal.startDateTime) return obj.proposal;
+      if (obj.title && obj.startDateTime) return obj;
+    }
+    return null;
+  }
+
+  function extractProposalFromContent(content: string) {
+    if (!content) return null;
+    const m = content.match(/<<<PROPOSAL\n([\s\S]+?)\n>>>/);
+    if (!m) return null;
+    try {
+      return JSON.parse(m[1]);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function approveEvent(toolCallId: string, proposal: any) {
+    setApprovalState((s) => ({ ...s, [toolCallId]: { status: "creating" } }));
+    try {
+      const res = await fetch("/api/calendar/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ event: proposal }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Create failed");
+      setApprovalState((s) => ({ ...s, [toolCallId]: { status: "done", result: data.result } }));
+    } catch (err: any) {
+      setApprovalState((s) => ({ ...s, [toolCallId]: { status: "error", result: err?.message || String(err) } }));
+    }
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -100,17 +149,41 @@ export function Chat() {
               >
                 <CardContent className="p-4">
                   <div className="whitespace-pre-wrap">{message.content}</div>
-                  {message.toolInvocations?.map((toolInvocation) => (
-                    <div
-                      key={toolInvocation.toolCallId}
-                      className="mt-2 text-xs opacity-75"
-                    >
-                      {toolInvocation.toolName}:{" "}
-                      {toolInvocation.state === "result"
-                        ? "✓ Completed"
-                        : "⏳ Processing..."}
-                    </div>
-                  ))}
+                  {message.toolInvocations?.map((toolInvocation) => {
+                    const proposalFromInvocation = extractProposal(toolInvocation);
+                    const proposalFromContent = extractProposalFromContent(message.content || "");
+                    const proposal = proposalFromInvocation || proposalFromContent;
+                    const state = approvalState[toolInvocation.toolCallId]?.status || "idle";
+                    const result = approvalState[toolInvocation.toolCallId]?.result;
+                    return (
+                      <div key={toolInvocation.toolCallId} className="mt-2 text-xs opacity-75">
+                        <div>
+                          {toolInvocation.toolName}: {toolInvocation.state === "result" ? "✓ Completed" : "⏳ Processing..."}
+                        </div>
+                        {proposal && toolInvocation.toolName === "createCalendarEvent" && (
+                          <div className="mt-2 p-2 border rounded bg-muted">
+                            <div className="text-sm font-medium">Proposed event</div>
+                            <div className="text-xs">{proposal.title}</div>
+                            <div className="text-xs">{proposal.startDateTime} — {proposal.endDateTime}</div>
+                            <div className="text-xs">{proposal.location}</div>
+                            <div className="mt-2 flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                disabled={state === "creating" || state === "done"}
+                                onClick={() => approveEvent(toolInvocation.toolCallId, proposal)}
+                              >
+                                {state === "creating" ? "Creating..." : state === "done" ? "Created" : "Approve & Create"}
+                              </Button>
+                              {state === "error" && <div className="text-red-500 text-xs">Error: {result}</div>}
+                              {state === "done" && result?.id && (
+                                <a className="text-xs text-blue-600" href={result.htmlLink} target="_blank" rel="noreferrer">Open event</a>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </CardContent>
               </Card>
             </div>

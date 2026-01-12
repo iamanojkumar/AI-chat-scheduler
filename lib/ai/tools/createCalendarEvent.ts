@@ -14,8 +14,15 @@ export type CreateCalendarEventInput = z.infer<typeof createCalendarEventSchema>
 
 export async function createCalendarEvent(
   input: CreateCalendarEventInput,
-  accessToken: string
-): Promise<{ id: string; htmlLink: string }> {
+  accessToken: string,
+  options?: { confirm?: boolean }
+): Promise<{ id?: string; htmlLink?: string } | { proposal: CreateCalendarEventInput }> {
+  // If the call is not explicitly confirmed, return a proposal object
+  // instead of creating the event. This prevents scheduling without user approval.
+  if (!options?.confirm) {
+    return { proposal: input };
+  }
+
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
 

@@ -44,18 +44,21 @@ export async function POST(req: Request) {
     }
   }
 
-  // If we're in development and a dev token was provided, return a
-  // deterministic canned streaming response to make testing easier
-  // without calling the real model provider.
-  const devHeader = req.headers.get("x-dev-access-token");
+  // If we're in development and the explicit canned header was provided,
+  // return a deterministic canned streaming response to make testing easier
+  // without calling the real model provider. This ensures dev access tokens
+  // don't automatically force the canned response.
+  const devCanned = req.headers.get("x-dev-canned");
   const devEnv = process.env.DEV_ACCESS_TOKEN;
-  if (process.env.NODE_ENV === "development" && (devHeader || devEnv)) {
+  if (process.env.NODE_ENV === "development" && devCanned) {
     const encoder = new TextEncoder();
     const chunks = [
       "Here are upcoming sci-fi movies I found and scheduled:\n",
       "- Stellar Drift (2026-05-01) — scheduled: May 3, 2026 at 7:00 PM\n",
       "- Quantum Horizon (2026-06-15) — scheduled: Jun 16, 2026 at 6:30 PM\n",
-      "I've added tentative events to your calendar. Let me know if you'd like to change times.\n",
+      "I've added tentative events to your calendar. Below is the proposed event I would create for Stellar Drift if you approve:\n",
+      "<<<PROPOSAL\n{\n  \"title\": \"Stellar Drift Screening\",\n  \"description\": \"Screening of Stellar Drift (2026)\",\n  \"startDateTime\": \"2026-05-03T19:00:00\",\n  \"endDateTime\": \"2026-05-03T21:00:00\",\n  \"location\": \"Local Cinema\",\n  \"timeZone\": \"America/New_York\"\n}\n>>>\n",
+      "You can approve the proposed event and I'll add it to your calendar.\n",
     ];
 
     const stream = new ReadableStream({
@@ -74,11 +77,19 @@ export async function POST(req: Request) {
 
   const { messages } = await req.json();
 
-  const result = streamText({
-    model: openai("gpt-4o"),
-    messages,
-    maxSteps: 5,
-    tools: {
+  let result: any;
+  try {
+    // Log helpful debug info in development
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[chat] OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
+      console.debug("[chat] session access token present:", !!session?.accessToken);
+    }
+
+    result = streamText({
+      model: openai("gpt-4o"),
+      messages,
+      maxSteps: 5,
+      tools: {
       searchWeb: tool({
         description: tools.searchWeb.description,
         parameters: tools.searchWeb.parameters,
@@ -101,9 +112,13 @@ export async function POST(req: Request) {
           return await createCalendarEvent(args, accessToken);
         },
       }),
-    },
-  });
+      },
+    });
 
-  return result.toDataStreamResponse();
+    return result.toDataStreamResponse();
+  } catch (err: any) {
+    console.error("[chat] streamText error:", err?.stack ?? err?.message ?? err);
+    return new Response(JSON.stringify({ error: err?.message ?? String(err) }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
 }
 
