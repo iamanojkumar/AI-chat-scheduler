@@ -44,6 +44,34 @@ export async function POST(req: Request) {
     }
   }
 
+  // If we're in development and a dev token was provided, return a
+  // deterministic canned streaming response to make testing easier
+  // without calling the real model provider.
+  const devHeader = req.headers.get("x-dev-access-token");
+  const devEnv = process.env.DEV_ACCESS_TOKEN;
+  if (process.env.NODE_ENV === "development" && (devHeader || devEnv)) {
+    const encoder = new TextEncoder();
+    const chunks = [
+      "Here are upcoming sci-fi movies I found and scheduled:\n",
+      "- Stellar Drift (2026-05-01) — scheduled: May 3, 2026 at 7:00 PM\n",
+      "- Quantum Horizon (2026-06-15) — scheduled: Jun 16, 2026 at 6:30 PM\n",
+      "I've added tentative events to your calendar. Let me know if you'd like to change times.\n",
+    ];
+
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const c of chunks) {
+          controller.enqueue(encoder.encode(c));
+        }
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
   const { messages } = await req.json();
 
   const result = streamText({
